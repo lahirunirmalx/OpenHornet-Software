@@ -8,3 +8,5 @@ watchDigitalPin	KEYWORD2
 watchAnalogPin	KEYWORD2
 isDiagnosticActive	KEYWORD2
 ohDcsMissionActive	KEYWORD2
+ohWs2812BacklightBegin	KEYWORD2
+ohWs2812BacklightWrite	KEYWORD2

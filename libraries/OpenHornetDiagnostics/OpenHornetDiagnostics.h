@@ -34,17 +34,20 @@
  * @file OpenHornetDiagnostics.h
  * @author lahirunirmalx
  * @date 10.14.2026
- * @version 0.2.0
+ * @version 0.3.0
  * @copyright Copyright 2016-2026 OpenHornet. Licensed under the Apache License, Version 2.0.
  * @brief Backlight power-on test, DCS sync indication and diagnostic mode for the
- *        DDI (1A3, 1A9) and AMPCD (2A3A1) boards with a plain LED backlight on a PWM pin.
+ *        DDI (1A3, 1A9) and AMPCD (2A3A1) boards.
  *
  * @details
- * **Scope:** this helper drives one PWM pin with analogWrite() and nothing else. It is
- * only for the DDI and AMPCD boards whose backlight is a string of plain LEDs on the
- * backlight PWM pin. DDI/AMPCD boards fitted with WS2812 addressable backlighting, and
- * every other panel (their backlights are WS2812 strings driven by the 2A13 backlight
- * controller), are not supported and will not work with this helper.
+ * **Scope:** this helper only computes a backlight level (0-255) and hands it to one
+ * output. By default that output is analogWrite() on the backlight PWM pin, which fits
+ * the released DDI/AMPCD boards (plain LEDs on the PWM pin). A DDI/AMPCD board with a
+ * WS2812 addressable backlight needs the sketch to supply a writer instead (see
+ * OpenHornetWs2812Backlight.h and the callback constructor); the data pin, pixel count
+ * and colour order depend on that board and must be set per board. Other panels have no
+ * backlight output on their own board (their WS2812 strings are driven by the 2A13
+ * backlight controller) and are not supported.
  *
  * Implements the behaviour requested in OpenHornet-Software issue #117:
  *
@@ -95,6 +98,11 @@
  *
  * The timing constants below can be overridden by defining the OH_DIAG_* macro
  * before the include.
+ *
+ * **Output writes:** identical levels are written once. OH_DIAG_MIN_WRITE_MS (default 0)
+ * spaces consecutive writes out; a WS2812 writer should set it to around 20 because
+ * FastLED.show() on AVR keeps interrupts off for about 30 us per pixel, and the
+ * power-on fade otherwise changes the level every 4 ms while DCS-BIOS serial arrives.
  */
 
 #ifndef OPENHORNET_DIAGNOSTICS_H
@@ -126,6 +134,9 @@
 #ifndef OH_DIAG_ANALOG_THRESHOLD
 #define OH_DIAG_ANALOG_THRESHOLD 8  ///< Minimum analogRead() change (0-1023) counted as activity.
 #endif
+#ifndef OH_DIAG_MIN_WRITE_MS
+#define OH_DIAG_MIN_WRITE_MS 0  ///< Minimum time between two backlight writes, in ms. 0 = write as soon as the level changes.
+#endif
 
 /**
  * @brief Non-blocking backlight state machine: power-on fade, DCS sync flash and diagnostic mode.
@@ -142,19 +153,39 @@ public:
     DIAGNOSTIC   ///< Diagnostic mode: full bright, blinks on every input.
   };
 
+  /// Sketch supplied backlight output: receives the level to show (0 = off, 255 = full).
+  typedef void (*WriteLevelFn)(uint8_t level);
+
   /**
+   * @brief Plain LED backlight on a PWM pin (released DDI/AMPCD boards).
    * @param backlightPin PWM capable pin driving the backlight.
    */
   explicit OhBacklightDiagnostics(uint8_t backlightPin)
-    : pin_(backlightPin), state_(WAIT_SYNC), dcsLevel_(0), synced_(false), syncAnnounced_(false),
+    : pin_(backlightPin), writeFn_(NULL), state_(WAIT_SYNC), dcsLevel_(0), synced_(false), syncAnnounced_(false),
       missionActive_(false), holdArmed_(true), holding_(false), holdStart_(0), phaseStart_(0), flashUntil_(0),
+      pendingLevel_(0), lastLevel_(-1), lastWrite_(0),
       watchedCount_(0), watchedMask_(0), analogPin_(0xFF), lastAnalog_(0) {}
 
   /**
-   * @brief Configure the backlight pin and start the power-on fade. Call from setup().
+   * @brief Backlight driven by a sketch supplied writer (for example WS2812 pixels, see OpenHornetWs2812Backlight.h).
+   * @param writeLevel Function called with the level to show (0-255). The sketch owns the LED
+   *        driver and its setup; begin() does not touch any pin on this path.
+   */
+  explicit OhBacklightDiagnostics(WriteLevelFn writeLevel)
+    : pin_(0xFF), writeFn_(writeLevel), state_(WAIT_SYNC), dcsLevel_(0), synced_(false), syncAnnounced_(false),
+      missionActive_(false), holdArmed_(true), holding_(false), holdStart_(0), phaseStart_(0), flashUntil_(0),
+      pendingLevel_(0), lastLevel_(-1), lastWrite_(0),
+      watchedCount_(0), watchedMask_(0), analogPin_(0xFF), lastAnalog_(0) {}
+
+  /**
+   * @brief Configure the backlight output and start the power-on fade. Call from setup().
+   * On the PWM path this sets the pin to OUTPUT; on the writer path the sketch has already
+   * set up its LED driver.
    */
   void begin() {
-    pinMode(pin_, OUTPUT);
+    if (writeFn_ == NULL) {
+      pinMode(pin_, OUTPUT);
+    }
     write(0);
     phaseStart_ = millis();
     state_ = FADE_UP;
@@ -273,6 +304,8 @@ public:
         break;
       }
     }
+
+    flushWrite(now);
   }
 
   /// @return true while diagnostic mode is active.
@@ -285,7 +318,30 @@ public:
   State state() const { return state_; }
 
 private:
-  void write(uint8_t level) { analogWrite(pin_, level); }
+  /// Request a backlight level. Written now if allowed, otherwise on the next update().
+  void write(uint8_t level) {
+    pendingLevel_ = level;
+    flushWrite(millis());
+  }
+
+  /// Write the pending level once it differs from the last written one and OH_DIAG_MIN_WRITE_MS has passed.
+  void flushWrite(unsigned long now) {
+    if ((int)pendingLevel_ == lastLevel_) {
+      return;
+    }
+#if OH_DIAG_MIN_WRITE_MS > 0
+    if (lastLevel_ >= 0 && (now - lastWrite_) < (unsigned long)OH_DIAG_MIN_WRITE_MS) {
+      return;
+    }
+#endif
+    if (writeFn_ != NULL) {
+      writeFn_(pendingLevel_);
+    } else {
+      analogWrite(pin_, pendingLevel_);
+    }
+    lastLevel_ = pendingLevel_;
+    lastWrite_ = now;
+  }
 
   /// Decide what to do once the power-on fade or diagnostic mode ends.
   void enterIdle(unsigned long now) {
@@ -370,6 +426,7 @@ private:
   }
 
   uint8_t pin_;
+  WriteLevelFn writeFn_;
   State state_;
   uint8_t dcsLevel_;
   bool synced_;
@@ -380,6 +437,9 @@ private:
   unsigned long holdStart_;
   unsigned long phaseStart_;
   unsigned long flashUntil_;
+  uint8_t pendingLevel_;
+  int lastLevel_;
+  unsigned long lastWrite_;
   uint8_t watchedPins_[OH_DIAG_MAX_WATCHED_PINS];
   uint8_t watchedCount_;
   uint16_t watchedMask_;

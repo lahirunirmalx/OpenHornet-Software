@@ -32,7 +32,7 @@ This manual covers writing software for the OpenHornet project, including how to
 - Wire
 - ArduinoJoystickLibrary
 - AccelStepper
-- OpenHornetDiagnostics (in-tree, `libraries/OpenHornetDiagnostics`; DDI/AMPCD boards with a plain LED backlight on a PWM pin only, not WS2812 backlit boards or other panels)
+- OpenHornetDiagnostics (in-tree, `libraries/OpenHornetDiagnostics`; DDI/AMPCD backlight helper: PWM LED backlight by default, WS2812 via `OpenHornetWs2812Backlight.h` with board specific pin and pixel count; not for other panels)
 
 ### Suggested Debug Tools
 

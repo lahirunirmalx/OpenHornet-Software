@@ -46,8 +46,9 @@
  *  * **RS485 Bus Address:** 4
  * 
  * **Backlight behaviour (issue #117):**
- *  * Only for the DDI boards with a plain LED backlight on the backlight PWM pin. Boards with
- *    WS2812 backlighting are driven by 2A13-BACKLIGHT_CONTROLLER and do not use this.
+ *  * Backlight output: plain LEDs on the backlight PWM pin by default (released DDI boards). For a
+ *    DDI board with a WS2812 backlight string, define DDI_BACKLIGHT_WS2812 below and set the data pin
+ *    and pixel count to match the board. Other panels are not supported.
  *  * On power up the backlight fades from off to full and back to off.
  *  * When the first DCS-BIOS value arrives the backlight flashes three times, then follows DCS.
  *  * **Diagnostic mode:** hold any three pushbuttons for three seconds. The backlight goes to full
@@ -109,7 +110,18 @@
 #include "DcsBios.h"
 #include "Wire.h"
 #include "TCA9534.h"
+// Backlight hardware. Default: plain LEDs on the backlight PWM pin.
+// For a DDI board with a WS2812 backlight string, uncomment the next line and set the pin and count.
+//#define DDI_BACKLIGHT_WS2812
+#ifdef DDI_BACKLIGHT_WS2812
+#define OH_WS2812_PIN 9          ///< WS2812 data pin. Set to match the board.
+#define OH_WS2812_COUNT 20       ///< Number of WS2812 pixels in the backlight string. Set to match the board.
+#define OH_DIAG_MIN_WRITE_MS 20  ///< Space backlight writes out; FastLED.show() blocks interrupts per pixel.
+#endif
 #include "OpenHornetDiagnostics.h"
+#ifdef DDI_BACKLIGHT_WS2812
+#include "OpenHornetWs2812Backlight.h"
+#endif
 #include "OpenHornetDcsMission.h"
 
 // Define pins per the OH Interconnect. 
@@ -147,7 +159,11 @@ unsigned long debounceDelay = 10;  ///< The debounce delay duration in ms, **inc
 
 int index;
 
-OhBacklightDiagnostics ddiBacklight(DDI_BACK_LIGHT); ///< Power-on fade, DCS sync flash and diagnostic mode for the backlight.
+#ifdef DDI_BACKLIGHT_WS2812
+OhBacklightDiagnostics ddiBacklight(ohWs2812BacklightWrite); ///< Power-on fade, DCS sync flash and diagnostic mode, output to the WS2812 string.
+#else
+OhBacklightDiagnostics ddiBacklight(DDI_BACK_LIGHT); ///< Power-on fade, DCS sync flash and diagnostic mode, output to the backlight PWM pin.
+#endif
 
 //Connect switches to DCS-BIOS 
 DcsBios::RotaryEncoder rightDdiBrtCtl("RIGHT_DDI_BRT_CTL", "-3200", "+3200", RDDI_BRT_A, RDDI_BRT_B);
@@ -195,7 +211,10 @@ void setup() {
   ddiBacklight.watchDigitalPin(RDDI_CONT_B);
   ddiBacklight.watchDigitalPin(REWI_FIRE_SW);
   ddiBacklight.watchDigitalPin(REWI_MC_SW);
-  ddiBacklight.begin(); // set backlight pin mode to output and start the power-on fade
+#ifdef DDI_BACKLIGHT_WS2812
+  ohWs2812BacklightBegin(); // register the WS2812 string with FastLED, all pixels off
+#endif
+  ddiBacklight.begin(); // set up the backlight output and start the power-on fade
   
   pinMode(DDI_IRQ, OUTPUT);  // Set IRQ pinmode to match sample code to avoid controls becomming unresponsive issue
 
